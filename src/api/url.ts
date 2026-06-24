@@ -1,11 +1,19 @@
 export const API_URLS = {
+
+  // Start mainnet url REST paths 
   BASE_HOST: "https://api-v3.raydium.io",
   OWNER_BASE_HOST: "https://owner-v1.raydium.io",
   SERVICE_BASE_HOST: "https://service.raydium.io",
   MONITOR_BASE_HOST: "https://monitor.raydium.io",
-  SERVICE_1_BASE_HOST: "https://service-v1.raydium.io",
   TEMP_HOST: "https://temp-api-v1.raydium.io",
 
+  LAUNCH_AUTH_HOST: "https://launch-auth-v1.raydium.io",
+  LAUNCH_COMMENT_HOST: "https://launch-forum-v1.raydium.io",
+  LAUNCH_HISTORY_HOST: "https://launch-history-v1.raydium.io",
+  LAUNCH_MINT_HOST: "https://launch-mint-v1.raydium.io",
+  // End mainnet url REST paths
+
+  SERVICE_1_BASE_HOST: "https://service-v1.raydium.io",
   SEND_TRANSACTION: "/send-transaction",
   FARM_ARP: "/main/farm/info",
   FARM_ARP_LINE: "/main/farm-apr-tv",
@@ -76,14 +84,13 @@ export const API_URLS = {
 
   CPMM_LOCK: "https://dynamic-ipfs.raydium.io/lock/cpmm/position",
 
-  LAUNCH_AUTH_HOST: "https://launch-auth-v1.raydium.io",
-  LAUNCH_COMMENT_HOST: "hhttps://launch-forum-v1.raydium.io",
-  LAUNCH_HISTORY_HOST: "https://launch-history-v1.raydium.io",
-  LAUNCH_MINT_HOST: "https://launch-mint-v1.raydium.io",
+  
 };
 
 export const DEV_API_URLS = {
   ...API_URLS,
+
+  // Start devnet url REST paths 
   BASE_HOST: "https://api-v3-devnet.raydium.io",
   OWNER_BASE_HOST: "https://owner-v1-devnet.raydium.io",
   SWAP_HOST: "https://transaction-v1-devnet.raydium.io",
@@ -94,6 +101,7 @@ export const DEV_API_URLS = {
   LAUNCH_COMMENT_HOST: "https://launch-forum-v1-devnet.raydium.io",
   LAUNCH_HISTORY_HOST: "https://launch-history-v1-devnet.raydium.io",
   LAUNCH_MINT_HOST: "https://launch-mint-v1-devnet.raydium.io",
+  // End devnet url REST paths
 };
 
 export type API_URL_CONFIG = Partial<typeof API_URLS>;

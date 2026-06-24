@@ -61,14 +61,16 @@ export class Api {
   public logCount: number;
 
   public urlConfigs: API_URL_CONFIG;
+  private readonly defaultUrls: typeof API_URLS;
 
   constructor({ cluster, timeout, logRequests, logCount, urlConfigs }: ApiProps) {
     this.cluster = cluster;
     this.urlConfigs = urlConfigs || {};
     this.logCount = logCount || 1000;
+    this.defaultUrls = this.cluster === "devnet" ? DEV_API_URLS : API_URLS;
 
     this.api = axios.create({
-      baseURL: this.urlConfigs.BASE_HOST || (this.cluster === "devnet" ? DEV_API_URLS.BASE_HOST : API_URLS.BASE_HOST),
+      baseURL: this.urlConfigs.BASE_HOST || this.defaultUrls.BASE_HOST,
       timeout,
     });
 
@@ -133,22 +135,22 @@ export class Api {
   }
 
   async getClmmConfigs(): Promise<ApiClmmConfigInfo[]> {
-    const res = await this.api.get(this.urlConfigs.CLMM_CONFIG || API_URLS.CLMM_CONFIG);
+    const res = await this.api.get(this.urlConfigs.CLMM_CONFIG || this.defaultUrls.CLMM_CONFIG);
     return res.data;
   }
 
   async getClmmDynamicConfigs(): Promise<ApiClmmDynamicConfigInfo[]> {
-    const res = await this.api.get(this.urlConfigs.CLMM_DYNAMIC_CONFIG || API_URLS.CLMM_DYNAMIC_CONFIG);
+    const res = await this.api.get(this.urlConfigs.CLMM_DYNAMIC_CONFIG || this.defaultUrls.CLMM_DYNAMIC_CONFIG);
     return res.data;
   }
 
   async getCpmmConfigs(): Promise<ApiCpmmConfigInfo[]> {
-    const res = await this.api.get(this.urlConfigs.CPMM_CONFIG || API_URLS.CPMM_CONFIG);
+    const res = await this.api.get(this.urlConfigs.CPMM_CONFIG || this.defaultUrls.CPMM_CONFIG);
     return res.data;
   }
 
   async getClmmPoolLines(poolId: string): Promise<{ price: string; liquidity: string }[]> {
-    const res = await this.api.get(`${this.urlConfigs.POOL_POSITION_LINE || API_URLS.POOL_POSITION_LINE}?id=${poolId}`);
+    const res = await this.api.get(`${this.urlConfigs.POOL_POSITION_LINE || this.defaultUrls.POOL_POSITION_LINE}?id=${poolId}`);
     return res.data;
   }
 
@@ -169,7 +171,7 @@ export class Api {
   }
 
   async getChainTimeOffset(): Promise<{ offset: number }> {
-    const res = await this.api.get(this.urlConfigs.CHAIN_TIME || API_URLS.CHAIN_TIME);
+    const res = await this.api.get(this.urlConfigs.CHAIN_TIME || this.defaultUrls.CHAIN_TIME);
     return res.data;
   }
 
@@ -177,11 +179,11 @@ export class Api {
     rpcs: { batch: boolean; name: string; url: string; weight: number }[];
     strategy: string;
   }> {
-    return this.api.get(this.urlConfigs.RPCS || API_URLS.RPCS);
+    return this.api.get(this.urlConfigs.RPCS || this.defaultUrls.RPCS);
   }
 
   async getTokenList(): Promise<{ mintList: ApiV3Token[]; blacklist: string[]; whiteList: string[] }> {
-    const res = await this.api.get(this.urlConfigs.TOKEN_LIST || API_URLS.TOKEN_LIST);
+    const res = await this.api.get(this.urlConfigs.TOKEN_LIST || this.defaultUrls.TOKEN_LIST);
     return res.data;
   }
 
@@ -194,7 +196,7 @@ export class Api {
     })[]
   > {
     const r: JupToken[] = await this.api.get("", {
-      baseURL: this.urlConfigs.JUP_TOKEN_LIST || API_URLS.JUP_TOKEN_LIST,
+      baseURL: this.urlConfigs.JUP_TOKEN_LIST || this.defaultUrls.JUP_TOKEN_LIST,
     });
     return r.map((t) => ({
       ...t,
@@ -212,7 +214,7 @@ export class Api {
 
   async getTokenInfo(mint: (string | PublicKey)[]): Promise<ApiV3Token[]> {
     const res = await this.api.get(
-      (this.urlConfigs.MINT_INFO_ID || API_URLS.MINT_INFO_ID) + `?mints=${mint.map((m) => m.toString()).join(",")}`,
+      (this.urlConfigs.MINT_INFO_ID || this.defaultUrls.MINT_INFO_ID) + `?mints=${mint.map((m) => m.toString()).join(",")}`,
     );
     return res.data;
   }
@@ -220,7 +222,7 @@ export class Api {
   async getPoolList(props: FetchPoolParams = {}): Promise<PoolsApiReturn> {
     const { type = "all", sort = "liquidity", order = "desc", showFarms = false, nextPageId, pageSize = 100 } = props;
     const res = await this.api.get<PoolsApiReturn>(
-      (this.urlConfigs.POOL_LIST || API_URLS.POOL_LIST) +
+      (this.urlConfigs.POOL_LIST || this.defaultUrls.POOL_LIST) +
         `?size=${pageSize}&hasReward=${showFarms}${type && type !== "all" ? `&poolType=${type}` : ""}${
           sort ? `&sortField=${sort}` : ""
         }${order ? `&sortType=${order}` : ""}${nextPageId ? `&nextPageId=${nextPageId}` : ""}`,
@@ -230,7 +232,7 @@ export class Api {
 
   async fetchPoolById(props: { ids: string }): Promise<ApiV3PoolInfoItem[]> {
     const { ids } = props;
-    const res = await this.api.get((this.urlConfigs.POOL_SEARCH_BY_ID || API_URLS.POOL_SEARCH_BY_ID) + `?ids=${ids}`);
+    const res = await this.api.get((this.urlConfigs.POOL_SEARCH_BY_ID || this.defaultUrls.POOL_SEARCH_BY_ID) + `?ids=${ids}`);
     return res.data;
   }
 
@@ -250,7 +252,7 @@ export class Api {
     let data: PoolKeys[] = [];
     if (readyList.length) {
       const res = await this.api.get<PoolKeys[]>(
-        (this.urlConfigs.POOL_KEY_BY_ID || API_URLS.POOL_KEY_BY_ID) + `?ids=${readyList.join(",")}`,
+        (this.urlConfigs.POOL_KEY_BY_ID || this.defaultUrls.POOL_KEY_BY_ID) + `?ids=${readyList.join(",")}`,
       );
       data = res.data.filter(Boolean);
       data.forEach((poolKey) => {
@@ -284,7 +286,7 @@ export class Api {
 
     if (!mint1 && !mint2) throw new Error("not search mints provided");
     const res = await this.api.get(
-      (this.urlConfigs.POOL_SEARCH_MINT || API_URLS.POOL_SEARCH_MINT) +
+      (this.urlConfigs.POOL_SEARCH_MINT || this.defaultUrls.POOL_SEARCH_MINT) +
         `?size=100&mint1=${baseMint}${quoteMint ? `&mint2=${quoteMint}` : ""}${
           type && type !== "all" ? `&poolType=${type}` : ""
         }${sort ? `&sortField=${sort}` : ""}${order ? `&sortType=${order}` : ""}${
@@ -296,7 +298,7 @@ export class Api {
 
   async fetchPoolByLpMints(props: { ids: string }): Promise<ApiV3PoolInfoItem[]> {
     const { ids } = props;
-    const res = await this.api.get((this.urlConfigs.POOL_SEARCH_LP || API_URLS.POOL_SEARCH_LP) + `?lps=${ids}`);
+    const res = await this.api.get((this.urlConfigs.POOL_SEARCH_LP || this.defaultUrls.POOL_SEARCH_LP) + `?lps=${ids}`);
     return res.data;
   }
 
@@ -304,7 +306,7 @@ export class Api {
     const { ids } = props;
 
     const res = await this.api.get<FormatFarmInfoOut[]>(
-      (this.urlConfigs.FARM_INFO || API_URLS.FARM_INFO) + `?ids=${ids}`,
+      (this.urlConfigs.FARM_INFO || this.defaultUrls.FARM_INFO) + `?ids=${ids}`,
     );
     return res.data;
   }
@@ -313,14 +315,14 @@ export class Api {
     const { ids } = props;
 
     const res = await this.api.get<FormatFarmKeyOut[]>(
-      (this.urlConfigs.FARM_KEYS || API_URLS.FARM_KEYS) + `?ids=${ids}`,
+      (this.urlConfigs.FARM_KEYS || this.defaultUrls.FARM_KEYS) + `?ids=${ids}`,
     );
     return res.data;
   }
 
   async fetchAvailabilityStatus(): Promise<AvailabilityCheckAPI3> {
     const res = await this.api.get<AvailabilityCheckAPI3>(
-      this.urlConfigs.CHECK_AVAILABILITY || API_URLS.CHECK_AVAILABILITY,
+      this.urlConfigs.CHECK_AVAILABILITY || this.defaultUrls.CHECK_AVAILABILITY,
     );
     return res.data;
   }
@@ -333,11 +335,7 @@ export class Api {
       id: string;
       success: boolean;
       data: ApiLaunchConfig[];
-    }>(
-      this.cluster === "devnet"
-        ? "https://launch-mint-v1-devnet.raydium.io/main/configs"
-        : "https://launch-mint-v1.raydium.io/main/configs",
-    );
+    }>(`${this.urlConfigs.LAUNCH_MINT_HOST || this.defaultUrls.LAUNCH_MINT_HOST}/main/configs`);
     cacheLaunchConfigs.set(this.cluster, res.data.data);
     return res.data.data;
   }
@@ -353,14 +351,14 @@ export class Api {
    */
   async fetchFarmPositions(owner = ""): Promise<FarmPositionData> {
     const res = await this.api.get<FarmPositionData>(
-      `${this.urlConfigs.OWNER_BASE_HOST || API_URLS.OWNER_BASE_HOST}` +
-        (this.urlConfigs.OWNER_STAKE_FARMS || API_URLS.OWNER_STAKE_FARMS).replace("{owner}", owner),
+      `${this.urlConfigs.OWNER_BASE_HOST || this.defaultUrls.OWNER_BASE_HOST}` +
+        (this.urlConfigs.OWNER_STAKE_FARMS || this.defaultUrls.OWNER_STAKE_FARMS).replace("{owner}", owner),
     );
     return res.data;
   }
 
   async fetchCpmmLockInfo(key: string | PublicKey): Promise<CpmmLockInfo> {
-    const res = await this.api.get(`${this.urlConfigs.CPMM_LOCK || API_URLS.CPMM_LOCK}?id=${key.toString()}`);
+    const res = await this.api.get(`${this.urlConfigs.CPMM_LOCK || this.defaultUrls.CPMM_LOCK}?id=${key.toString()}`);
     return res as unknown as CpmmLockInfo;
   }
 }
