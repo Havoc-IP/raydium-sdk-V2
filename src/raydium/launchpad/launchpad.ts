@@ -22,6 +22,8 @@ import {
   CreateLaunchPad,
   CreateMultipleVesting,
   CreatePlatform,
+  CreatePlatformAllowConfig,
+  CreatePlatformCurveRule,
   CreatePlatformVestingAccount,
   CreateVesting,
   LaunchpadConfigInfo,
@@ -29,14 +31,18 @@ import {
   SellToken,
   SellTokenExactOut,
   UpdatePlatform,
+  UpdatePlatformCurveRule,
 } from "./type";
 import {
   getPdaCreatorFeeVaultAuth,
   getPdaCreatorVault,
   getPdaLaunchpadAuth,
+  getPdaLaunchpadConfigId,
   getPdaLaunchpadPoolId,
   getPdaLaunchpadVaultId,
+  getPdaPlatformAllowConfig,
   getPdaPlatformConfigAccess,
+  getPdaPlatformCurveRule,
   getPdaPlatformFeeVaultAuth,
   getPdaPlatformId,
   getPdaPlatformVault,
@@ -57,6 +63,12 @@ import {
   claimCreatorFee,
   initializeV2,
   createPlatformVestingAccountIns,
+  createPlatformAllowConfigIns,
+  closePlatformAllowConfigIns,
+  createPlatformCurveRuleIns,
+  updatePlatformCurveRuleIns,
+  removePlatformCurveRuleIns,
+  closePlatformCurveRuleIns,
 } from "./instrument";
 import {
   NATIVE_MINT,
@@ -71,8 +83,9 @@ import {
 import BN from "bn.js";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { getPdaMetadataKey } from "../clmm";
-import { LaunchpadConfig, LaunchpadPool, PlatformConfig } from "./layout";
+import { LaunchpadConfig, LaunchpadPool, PlatformConfig, PlatformCurveRule } from "./layout";
 import { Curve, SwapInfoReturn } from "./curve/curve";
+import { toLaunchpadMintProgramFlag } from "./util";
 import Decimal from "decimal.js";
 import { ApiV3Token } from "@/api";
 
@@ -117,6 +130,32 @@ export default class LaunchpadModule extends ModuleBase {
     super(params);
   }
 
+  private async getMintBTokenInfo({
+    mintB,
+    mintBProgram,
+    transferFeeConfigB,
+    skipCheckMintB,
+  }: {
+    mintB: PublicKey;
+    mintBProgram?: PublicKey;
+    transferFeeConfigB?: TransferFeeConfig;
+    skipCheckMintB?: boolean;
+  }): Promise<{ mintBProgram: PublicKey; transferFeeConfigB: TransferFeeConfig | undefined }> {
+    if (mintB.equals(NATIVE_MINT)) return { mintBProgram: TOKEN_PROGRAM_ID, transferFeeConfigB: undefined };
+    if (transferFeeConfigB) return { mintBProgram: mintBProgram ?? TOKEN_2022_PROGRAM_ID, transferFeeConfigB };
+    if (skipCheckMintB || mintBProgram?.equals(TOKEN_PROGRAM_ID))
+      return { mintBProgram: mintBProgram ?? TOKEN_PROGRAM_ID, transferFeeConfigB: undefined };
+
+    const mintInfo = await this.scope.connection.getAccountInfo(mintB);
+    if (!mintInfo || !mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID))
+      return { mintBProgram: mintBProgram ?? TOKEN_PROGRAM_ID, transferFeeConfigB: undefined };
+
+    return {
+      mintBProgram: mintInfo.owner,
+      transferFeeConfigB: getTransferFeeConfig(unpackMint(mintB, mintInfo, mintInfo.owner)) || undefined,
+    };
+  }
+
   public async createLaunchpad<T extends TxVersion>({
     programId = LAUNCHPAD_PROGRAM,
     authProgramId,
@@ -145,7 +184,10 @@ export default class LaunchpadModule extends ModuleBase {
     token2022,
     transferFeeExtensionParams,
     creatorFeeOn = CpmmCreatorFeeOn.OnlyTokenB,
-    platformConfigAccess,
+    platformAllowConfig,
+    mintBProgram: propsMintBProgram,
+    transferFeeConfigB: propsTransferFeeConfigB,
+    skipCheckMintB,
     ...extraConfigs
   }: CreateLaunchPad<T>): Promise<
     MakeMultiTxData<T, { address: LaunchpadPoolInfo & { poolId: PublicKey }; swapInfo: SwapInfoReturnExt }>
@@ -164,6 +206,13 @@ export default class LaunchpadModule extends ModuleBase {
     if (!configInfo) this.logAndCreateError("config not found");
     const mintB = configInfo!.mintB;
     const curType = configInfo!.curveType;
+
+    const { mintBProgram, transferFeeConfigB } = await this.getMintBTokenInfo({
+      mintB,
+      mintBProgram: propsMintBProgram,
+      transferFeeConfigB: propsTransferFeeConfigB,
+      skipCheckMintB,
+    });
 
     // const { publicKey: configId } = getPdaLaunchpadConfigId(programId, mintB, curType, configIndex);
     const { publicKey: poolId } = getPdaLaunchpadPoolId(programId, mintA, mintB);
@@ -250,7 +299,10 @@ export default class LaunchpadModule extends ModuleBase {
         startTime: new BN(0),
         totalAllocatedShare: new BN(0),
       },
-      mintProgramFlag: token2022 ? 1 : 0,
+      mintProgramFlag: toLaunchpadMintProgramFlag({
+        mintAProgram: token2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID,
+        mintBProgram,
+      }),
       cpmmCreatorFeeOn: creatorFeeOn,
       platformVestingShare: defaultPlatformVestingScale ?? new BN(0),
     };
@@ -279,6 +331,10 @@ export default class LaunchpadModule extends ModuleBase {
       this.logAndCreateError(`check create mint params failed, ${e.message}`);
     }
 
+    const platformCurveRuleId = platform.restrictCurveParam
+      ? getPdaPlatformCurveRule(programId, platformId, configId).publicKey
+      : undefined;
+
     txBuilder.addInstruction({
       instructions: [
         token2022
@@ -294,6 +350,7 @@ export default class LaunchpadModule extends ModuleBase {
               mintB,
               vaultA,
               vaultB,
+              mintBProgram,
 
               decimals,
               name,
@@ -319,7 +376,8 @@ export default class LaunchpadModule extends ModuleBase {
               extraConfigs?.unlockPeriod ?? new BN(0),
               creatorFeeOn,
               transferFeeExtensionParams,
-              platformConfigAccess ? getPdaPlatformConfigAccess(programId, platformId, configId).publicKey : undefined,
+              platformAllowConfig ? getPdaPlatformAllowConfig(programId, platformId, configId).publicKey : undefined,
+              platformCurveRuleId,
             )
           : initializeV2(
               programId,
@@ -334,6 +392,7 @@ export default class LaunchpadModule extends ModuleBase {
               vaultA,
               vaultB,
               metaId,
+              mintBProgram,
 
               decimals,
               name,
@@ -358,7 +417,8 @@ export default class LaunchpadModule extends ModuleBase {
               extraConfigs?.cliffPeriod ?? new BN(0),
               extraConfigs?.unlockPeriod ?? new BN(0),
               creatorFeeOn,
-              platformConfigAccess ? getPdaPlatformConfigAccess(programId, platformId, configId).publicKey : undefined,
+              platformAllowConfig ? getPdaPlatformAllowConfig(programId, platformId, configId).publicKey : undefined,
+              platformCurveRuleId,
             ),
       ],
     });
@@ -385,6 +445,7 @@ export default class LaunchpadModule extends ModuleBase {
         protocolFee: new BN(0),
         creatorFee: new BN(0),
       },
+      transferFeeB: undefined,
     };
     let splitIns;
     if (extraSigners?.length) txBuilder.addInstruction({ signers: extraSigners });
@@ -395,6 +456,9 @@ export default class LaunchpadModule extends ModuleBase {
         mintAProgram: token2022 ? TOKEN_2022_PROGRAM_ID : undefined,
         mintA,
         mintB,
+        mintBProgram,
+        transferFeeConfigB,
+        skipCheckMintB: true,
         poolInfo,
         buyAmount,
         minMintAAmount,
@@ -479,6 +543,9 @@ export default class LaunchpadModule extends ModuleBase {
     fromCreate = false,
     transferFeeConfigA: propsTransferFeeConfigA,
     skipCheckMintA = false,
+    mintBProgram: propsMintBProgram,
+    transferFeeConfigB: propsTransferFeeConfigB,
+    skipCheckMintB = false,
   }: BuyToken<T>): Promise<MakeTxData<T, SwapInfoReturnExt>> {
     if (buyAmount.lte(new BN(0))) this.logAndCreateError("buy amount should gt 0:", buyAmount.toString());
     const txBuilder = this.createTxBuilder(feePayer);
@@ -499,12 +566,19 @@ export default class LaunchpadModule extends ModuleBase {
       }
     }
 
+    const { mintBProgram, transferFeeConfigB } = await this.getMintBTokenInfo({
+      mintB,
+      mintBProgram: propsMintBProgram,
+      transferFeeConfigB: propsTransferFeeConfigB,
+      skipCheckMintB,
+    });
+
     const userTokenAccountA = this.scope.account.getAssociatedTokenAccount(mintA, mintAProgram);
 
     const isMintBSol = mintB.equals(NATIVE_MINT);
     const useAta = fromCreate && isMintBSol;
     let userTokenAccountB: PublicKey | null = useAta
-      ? this.scope.account.getAssociatedTokenAccount(mintB, TOKEN_PROGRAM_ID)
+      ? this.scope.account.getAssociatedTokenAccount(mintB, mintBProgram)
       : null;
     const mintBUseSOLBalance = isMintBSol;
 
@@ -524,7 +598,7 @@ export default class LaunchpadModule extends ModuleBase {
                 userTokenAccountB!,
                 this.scope.ownerPubKey,
                 mintB,
-                TOKEN_PROGRAM_ID,
+                mintBProgram,
               ),
               SystemProgram.transfer({
                 fromPubkey: this.scope.ownerPubKey,
@@ -540,6 +614,7 @@ export default class LaunchpadModule extends ModuleBase {
     if (!useAta) {
       const { account: _ownerTokenAccountB, instructionParams: _tokenAccountBInstruction } =
         await this.scope.account.getOrCreateTokenAccount({
+          tokenProgram: mintBProgram,
           mint: mintB,
           owner: this.scope.ownerPubKey,
           createInfo: mintBUseSOLBalance
@@ -596,6 +671,7 @@ export default class LaunchpadModule extends ModuleBase {
       shareFeeRate,
       creatorFeeRate: platformInfo.creatorFeeRate,
       transferFeeConfigA,
+      transferFeeConfigB,
       slot: await this.scope.connection.getSlot(),
     });
 
@@ -619,11 +695,17 @@ export default class LaunchpadModule extends ModuleBase {
       );
     }
 
-    const shareATA = shareFeeReceiver ? getATAAddress(shareFeeReceiver, mintB, TOKEN_PROGRAM_ID).publicKey : undefined;
+    const shareATA = shareFeeReceiver ? getATAAddress(shareFeeReceiver, mintB, mintBProgram).publicKey : undefined;
     if (shareATA) {
       txBuilder.addInstruction({
         instructions: [
-          createAssociatedTokenAccountIdempotentInstruction(this.scope.ownerPubKey, shareATA, shareFeeReceiver!, mintB),
+          createAssociatedTokenAccountIdempotentInstruction(
+            this.scope.ownerPubKey,
+            shareATA,
+            shareFeeReceiver!,
+            mintB,
+            mintBProgram,
+          ),
         ],
       });
     }
@@ -643,7 +725,7 @@ export default class LaunchpadModule extends ModuleBase {
           mintA,
           mintB,
           mintAProgram,
-          TOKEN_PROGRAM_ID,
+          mintBProgram,
 
           getPdaPlatformVault(programId, poolInfo.platformId, mintB).publicKey,
           getPdaCreatorVault(programId, poolInfo.creator, mintB).publicKey,
@@ -694,6 +776,9 @@ export default class LaunchpadModule extends ModuleBase {
     associatedOnly = true,
     checkCreateATAOwner = false,
     skipCheckMintA = false,
+    mintBProgram: propsMintBProgram,
+    transferFeeConfigB: propsTransferFeeConfigB,
+    skipCheckMintB = false,
   }: BuyTokenExactOut<T>): Promise<MakeTxData<T, { outAmount: BN; maxSpentAmount: BN }>> {
     if (outAmount.lte(new BN(0))) this.logAndCreateError("out amount should gt 0:", outAmount.toString());
     const txBuilder = this.createTxBuilder(feePayer);
@@ -739,6 +824,13 @@ export default class LaunchpadModule extends ModuleBase {
       }
     }
 
+    const { mintBProgram, transferFeeConfigB } = await this.getMintBTokenInfo({
+      mintB,
+      mintBProgram: propsMintBProgram,
+      transferFeeConfigB: propsTransferFeeConfigB,
+      skipCheckMintB,
+    });
+
     const calculatedAmount = Curve.buyExactOut({
       poolInfo,
       amountA: outAmount,
@@ -748,6 +840,7 @@ export default class LaunchpadModule extends ModuleBase {
       shareFeeRate,
       creatorFeeRate: platformInfo.creatorFeeRate,
       transferFeeConfigA,
+      transferFeeConfigB,
       slot: await this.scope.connection.getSlot(),
     });
 
@@ -781,6 +874,7 @@ export default class LaunchpadModule extends ModuleBase {
 
     const { account: _ownerTokenAccountB, instructionParams: _tokenAccountBInstruction } =
       await this.scope.account.getOrCreateTokenAccount({
+        tokenProgram: mintBProgram,
         mint: mintB,
         owner: this.scope.ownerPubKey,
         createInfo: mintBUseSOLBalance
@@ -803,11 +897,17 @@ export default class LaunchpadModule extends ModuleBase {
         this.scope.account.tokenAccounts,
       );
 
-    const shareATA = shareFeeReceiver ? getATAAddress(shareFeeReceiver, mintB, TOKEN_PROGRAM_ID).publicKey : undefined;
+    const shareATA = shareFeeReceiver ? getATAAddress(shareFeeReceiver, mintB, mintBProgram).publicKey : undefined;
     if (shareATA) {
       txBuilder.addInstruction({
         instructions: [
-          createAssociatedTokenAccountIdempotentInstruction(this.scope.ownerPubKey, shareATA, shareFeeReceiver!, mintB),
+          createAssociatedTokenAccountIdempotentInstruction(
+            this.scope.ownerPubKey,
+            shareATA,
+            shareFeeReceiver!,
+            mintB,
+            mintBProgram,
+          ),
         ],
       });
     }
@@ -829,7 +929,7 @@ export default class LaunchpadModule extends ModuleBase {
           mintA,
           mintB,
           mintAProgram,
-          TOKEN_PROGRAM_ID,
+          mintBProgram,
 
           getPdaPlatformVault(programId, poolInfo.platformId, mintB).publicKey,
           getPdaCreatorVault(programId, poolInfo.creator, mintB).publicKey,
@@ -877,6 +977,9 @@ export default class LaunchpadModule extends ModuleBase {
     associatedOnly = true,
     checkCreateATAOwner = false,
     skipCheckMintA = false,
+    mintBProgram: propsMintBProgram,
+    transferFeeConfigB: propsTransferFeeConfigB,
+    skipCheckMintB = false,
   }: SellToken<T>): Promise<MakeTxData<T, { outAmount: BN }>> {
     authProgramId = authProgramId ?? getPdaLaunchpadAuth(programId).publicKey;
     const txBuilder = this.createTxBuilder(feePayer);
@@ -894,6 +997,13 @@ export default class LaunchpadModule extends ModuleBase {
         transferFeeConfigA = getTransferFeeConfig(onlineData) || undefined;
       }
     }
+
+    const { mintBProgram, transferFeeConfigB } = await this.getMintBTokenInfo({
+      mintB,
+      mintBProgram: propsMintBProgram,
+      transferFeeConfigB: propsTransferFeeConfigB,
+      skipCheckMintB,
+    });
 
     let userTokenAccountA: PublicKey | null = null;
     let userTokenAccountB: PublicKey | null = null;
@@ -919,15 +1029,14 @@ export default class LaunchpadModule extends ModuleBase {
       this.logAndCreateError("cannot found mintA token accounts", "tokenAccounts", this.scope.account.tokenAccounts);
     const { account: _ownerTokenAccountB, instructionParams: _tokenAccountBInstruction } =
       await this.scope.account.getOrCreateTokenAccount({
+        tokenProgram: mintBProgram,
         mint: mintB,
         owner: this.scope.ownerPubKey,
 
-        createInfo: mintBUseSOLBalance
-          ? {
-              payer: this.scope.ownerPubKey!,
-              amount: 0,
-            }
-          : undefined,
+        createInfo: {
+          payer: this.scope.ownerPubKey!,
+          amount: 0,
+        },
         skipCloseAccount: !mintBUseSOLBalance,
         notUseTokenAccount: mintBUseSOLBalance,
         associatedOnly: mintBUseSOLBalance ? false : associatedOnly,
@@ -936,8 +1045,8 @@ export default class LaunchpadModule extends ModuleBase {
     if (_ownerTokenAccountB) userTokenAccountB = _ownerTokenAccountB;
     txBuilder.addInstruction(_tokenAccountBInstruction || {});
 
-    if (userTokenAccountB === undefined)
-      this.logAndCreateError("cannot found mintB token accounts", "tokenAccounts", this.scope.account.tokenAccounts);
+    if (!userTokenAccountB)
+      this.logAndCreateError("cannot found mintB token accounts", "tokenAccounts", { userTokenAccountB });
 
     let poolInfo = propPoolInfo;
     if (!poolInfo) {
@@ -973,6 +1082,7 @@ export default class LaunchpadModule extends ModuleBase {
       shareFeeRate,
       creatorFeeRate: platformInfo.creatorFeeRate,
       transferFeeConfigA,
+      transferFeeConfigB,
       slot: await this.scope.connection.getSlot(),
     });
 
@@ -986,11 +1096,17 @@ export default class LaunchpadModule extends ModuleBase {
 
     if (minAmountB.lte(new BN(0))) this.logAndCreateError(`out ${mintB.toBase58()} amount should be gt 0`);
 
-    const shareATA = shareFeeReceiver ? getATAAddress(shareFeeReceiver, mintB, TOKEN_PROGRAM_ID).publicKey : undefined;
+    const shareATA = shareFeeReceiver ? getATAAddress(shareFeeReceiver, mintB, mintBProgram).publicKey : undefined;
     if (shareATA) {
       txBuilder.addInstruction({
         instructions: [
-          createAssociatedTokenAccountIdempotentInstruction(this.scope.ownerPubKey, shareATA, shareFeeReceiver!, mintB),
+          createAssociatedTokenAccountIdempotentInstruction(
+            this.scope.ownerPubKey,
+            shareATA,
+            shareFeeReceiver!,
+            mintB,
+            mintBProgram,
+          ),
         ],
       });
     }
@@ -1011,7 +1127,7 @@ export default class LaunchpadModule extends ModuleBase {
           mintA,
           mintB,
           mintAProgram,
-          TOKEN_PROGRAM_ID,
+          mintBProgram,
 
           getPdaPlatformVault(programId, poolInfo.platformId, mintB).publicKey,
           getPdaCreatorVault(programId, poolInfo.creator, mintB).publicKey,
@@ -1058,6 +1174,9 @@ export default class LaunchpadModule extends ModuleBase {
     associatedOnly = true,
     checkCreateATAOwner = false,
     skipCheckMintA = false,
+    mintBProgram: propsMintBProgram,
+    transferFeeConfigB: propsTransferFeeConfigB,
+    skipCheckMintB = false,
   }: SellTokenExactOut<T>): Promise<MakeTxData<T, { maxSellAmount: BN }>> {
     authProgramId = authProgramId ?? getPdaLaunchpadAuth(programId).publicKey;
     const txBuilder = this.createTxBuilder(feePayer);
@@ -1075,6 +1194,13 @@ export default class LaunchpadModule extends ModuleBase {
         transferFeeConfigA = getTransferFeeConfig(onlineData) || undefined;
       }
     }
+
+    const { mintBProgram, transferFeeConfigB } = await this.getMintBTokenInfo({
+      mintB,
+      mintBProgram: propsMintBProgram,
+      transferFeeConfigB: propsTransferFeeConfigB,
+      skipCheckMintB,
+    });
 
     let userTokenAccountA: PublicKey | null = null;
     let userTokenAccountB: PublicKey | null = null;
@@ -1101,6 +1227,7 @@ export default class LaunchpadModule extends ModuleBase {
 
     const { account: _ownerTokenAccountB, instructionParams: _tokenAccountBInstruction } =
       await this.scope.account.getOrCreateTokenAccount({
+        tokenProgram: mintBProgram,
         mint: mintB,
         owner: this.scope.ownerPubKey,
 
@@ -1156,6 +1283,7 @@ export default class LaunchpadModule extends ModuleBase {
       shareFeeRate,
       creatorFeeRate: platformInfo.creatorFeeRate,
       transferFeeConfigA,
+      transferFeeConfigB,
       slot: await this.scope.connection.getSlot(),
     });
 
@@ -1170,11 +1298,17 @@ export default class LaunchpadModule extends ModuleBase {
     const maxSellAmountA =
       maxSellAmount ?? slippage ? new BN(decimalAmountA.mul(multiplier).toFixed(0)) : calculatedAmount.amountA.amount;
 
-    const shareATA = shareFeeReceiver ? getATAAddress(shareFeeReceiver, mintB, TOKEN_PROGRAM_ID).publicKey : undefined;
+    const shareATA = shareFeeReceiver ? getATAAddress(shareFeeReceiver, mintB, mintBProgram).publicKey : undefined;
     if (shareATA) {
       txBuilder.addInstruction({
         instructions: [
-          createAssociatedTokenAccountIdempotentInstruction(this.scope.ownerPubKey, shareATA, shareFeeReceiver!, mintB),
+          createAssociatedTokenAccountIdempotentInstruction(
+            this.scope.ownerPubKey,
+            shareATA,
+            shareFeeReceiver!,
+            mintB,
+            mintBProgram,
+          ),
         ],
       });
     }
@@ -1195,7 +1329,7 @@ export default class LaunchpadModule extends ModuleBase {
           mintA,
           mintB,
           mintAProgram,
-          TOKEN_PROGRAM_ID,
+          mintBProgram,
 
           getPdaPlatformVault(programId, poolInfo.platformId, mintB).publicKey,
           getPdaCreatorVault(programId, poolInfo.creator, mintB).publicKey,
@@ -1354,7 +1488,7 @@ export default class LaunchpadModule extends ModuleBase {
 
     mintB: propsMintB,
     vaultB: propsVaultB,
-    mintBProgram = TOKEN_PROGRAM_ID,
+    mintBProgram: propsMintBProgram,
 
     txVersion,
     computeBudgetConfig,
@@ -1389,7 +1523,9 @@ export default class LaunchpadModule extends ModuleBase {
       );
     }
 
-    const userTokenAccountB = getATAAddress(this.scope.ownerPubKey, mintB, TOKEN_PROGRAM_ID).publicKey;
+    const { mintBProgram } = await this.getMintBTokenInfo({ mintB, mintBProgram: propsMintBProgram });
+
+    const userTokenAccountB = getATAAddress(this.scope.ownerPubKey, mintB, mintBProgram).publicKey;
     txBuilder.addInstruction({
       instructions: [
         createAssociatedTokenAccountIdempotentInstruction(
@@ -1397,6 +1533,7 @@ export default class LaunchpadModule extends ModuleBase {
           userTokenAccountB,
           this.scope.ownerPubKey,
           mintB,
+          mintBProgram,
         ),
       ],
     });
@@ -1446,11 +1583,26 @@ export default class LaunchpadModule extends ModuleBase {
       ],
     });
 
-    allPlatformPool.forEach((data) => {
-      const pool = LaunchpadPool.decode(data.account.data);
-      if (pool.platformFee.lte(new BN(0))) return;
+    const pendingPools = allPlatformPool
+      .map((data) => ({ poolId: data.pubkey, pool: LaunchpadPool.decode(data.account.data) }))
+      .filter(({ pool }) => pool.platformFee.gt(new BN(0)));
 
-      const userTokenAccountB = getATAAddress(this.scope.ownerPubKey, pool.mintB, TOKEN_PROGRAM_ID).publicKey;
+    // the pools of one platform can be quoted in different mints, each on either token program
+    const mintBPrograms: Record<string, PublicKey> = {};
+    const mintBList = [...new Set(pendingPools.map(({ pool }) => pool.mintB.toBase58()))];
+    if (mintBList.length) {
+      const mintBData = await getMultipleAccountsInfoWithCustomFlags(
+        this.scope.connection,
+        mintBList.map((mint) => ({ pubkey: new PublicKey(mint) })),
+      );
+      mintBData.forEach((data) => {
+        mintBPrograms[data.pubkey.toBase58()] = data.accountInfo?.owner ?? TOKEN_PROGRAM_ID;
+      });
+    }
+
+    pendingPools.forEach(({ poolId, pool }) => {
+      const mintBProgram = mintBPrograms[pool.mintB.toBase58()] ?? TOKEN_PROGRAM_ID;
+      const userTokenAccountB = getATAAddress(this.scope.ownerPubKey, pool.mintB, mintBProgram).publicKey;
       txBuilder.addInstruction({
         instructions: [
           createAssociatedTokenAccountIdempotentInstruction(
@@ -1458,6 +1610,7 @@ export default class LaunchpadModule extends ModuleBase {
             userTokenAccountB,
             this.scope.ownerPubKey,
             pool.mintB,
+            mintBProgram,
           ),
         ],
       });
@@ -1468,12 +1621,12 @@ export default class LaunchpadModule extends ModuleBase {
             programId,
             platformClaimFeeWallet,
             authProgramId!,
-            data.pubkey,
+            poolId,
             platformId,
             pool.vaultB,
             userTokenAccountB!,
             pool.mintB,
-            TOKEN_PROGRAM_ID,
+            mintBProgram,
           ),
         ],
       });
@@ -1685,7 +1838,7 @@ export default class LaunchpadModule extends ModuleBase {
     programId = LAUNCHPAD_PROGRAM,
     platformId,
     mintB,
-    mintBProgram = TOKEN_PROGRAM_ID,
+    mintBProgram: propsMintBProgram,
     claimFeeWallet,
     txVersion,
     computeBudgetConfig,
@@ -1696,6 +1849,7 @@ export default class LaunchpadModule extends ModuleBase {
 
     const platformFeeVault = getPdaPlatformVault(programId, platformId, mintB).publicKey;
     const platformFeeAuth = getPdaPlatformFeeVaultAuth(programId).publicKey;
+    const { mintBProgram } = await this.getMintBTokenInfo({ mintB, mintBProgram: propsMintBProgram });
 
     const userTokenAccount = this.scope.account.getAssociatedTokenAccount(mintB, mintBProgram);
 
@@ -1754,6 +1908,7 @@ export default class LaunchpadModule extends ModuleBase {
       if (!userTokenAccount) {
         const { account: _userTokenAccount, instructionParams: _tokenAccountInstruction } =
           await this.scope.account.getOrCreateTokenAccount({
+            tokenProgram: platform.mintBProgram ?? TOKEN_PROGRAM_ID,
             mint: platform.mintB,
             owner: this.scope.ownerPubKey,
             createInfo: useSolBalance
@@ -1801,7 +1956,7 @@ export default class LaunchpadModule extends ModuleBase {
   public async claimCreatorFee<T extends TxVersion>({
     programId = LAUNCHPAD_PROGRAM,
     mintB,
-    mintBProgram = TOKEN_PROGRAM_ID,
+    mintBProgram: propsMintBProgram,
     txVersion,
     computeBudgetConfig,
     txTipConfig,
@@ -1811,6 +1966,7 @@ export default class LaunchpadModule extends ModuleBase {
 
     const creatorFeeVault = getPdaCreatorVault(programId, this.scope.ownerPubKey, mintB).publicKey;
     const creatorFeeVaultAuth = getPdaCreatorFeeVaultAuth(programId).publicKey;
+    const { mintBProgram } = await this.getMintBTokenInfo({ mintB, mintBProgram: propsMintBProgram });
     const userTokenAccount = this.scope.account.getAssociatedTokenAccount(mintB, mintBProgram);
 
     txBuilder.addInstruction({
@@ -1883,6 +2039,225 @@ export default class LaunchpadModule extends ModuleBase {
     if (txVersion == TxVersion.V0)
       return txBuilder.sizeCheckBuildV0({ computeBudgetConfig }) as Promise<MakeMultiTxData<T>>;
     return txBuilder.sizeCheckBuild({ computeBudgetConfig }) as Promise<MakeMultiTxData<T>>;
+  }
+
+  public async createPlatformAllowConfig<T extends TxVersion>({
+    programId = LAUNCHPAD_PROGRAM,
+    platformAdmin,
+    platformId,
+    configInfo,
+    txVersion,
+    computeBudgetConfig,
+    txTipConfig,
+    feePayer,
+  }: CreatePlatformAllowConfig<T>): Promise<MakeTxData<T>> {
+    const txBuilder = this.createTxBuilder(feePayer);
+
+    const { publicKey: globalConfigId } = getPdaLaunchpadConfigId(
+      programId,
+      new PublicKey(configInfo.mintB),
+      configInfo.curveType,
+      configInfo.index,
+    );
+    const { publicKey: platformAllowConfig } = getPdaPlatformAllowConfig(programId, platformId, globalConfigId);
+    txBuilder.addInstruction({
+      instructions: [
+        createPlatformAllowConfigIns(programId, platformAdmin, platformId, globalConfigId, platformAllowConfig),
+      ],
+    });
+
+    txBuilder.addCustomComputeBudget(computeBudgetConfig);
+    txBuilder.addTipInstruction(txTipConfig);
+
+    return txBuilder.versionBuild({
+      txVersion,
+      extInfo: {
+        platformId,
+      },
+    }) as Promise<MakeTxData<T, { platformId: PublicKey }>>;
+  }
+
+  public async closePlatformAllowConfig<T extends TxVersion>({
+    programId = LAUNCHPAD_PROGRAM,
+    platformAdmin,
+    platformId,
+    configInfo,
+    txVersion,
+    computeBudgetConfig,
+    txTipConfig,
+    feePayer,
+  }: CreatePlatformAllowConfig<T>): Promise<MakeTxData<T, { platformAllowConfig: PublicKey }>> {
+    const txBuilder = this.createTxBuilder(feePayer);
+
+    const { publicKey: globalConfigId } = getPdaLaunchpadConfigId(
+      programId,
+      new PublicKey(configInfo.mintB),
+      configInfo.curveType,
+      configInfo.index,
+    );
+    const { publicKey: platformAllowConfig } = getPdaPlatformAllowConfig(programId, platformId, globalConfigId);
+    txBuilder.addInstruction({
+      instructions: [
+        closePlatformAllowConfigIns(programId, platformAdmin, platformId, globalConfigId, platformAllowConfig),
+      ],
+    });
+
+    txBuilder.addCustomComputeBudget(computeBudgetConfig);
+    txBuilder.addTipInstruction(txTipConfig);
+
+    return txBuilder.versionBuild({
+      txVersion,
+      extInfo: {
+        platformAllowConfig,
+      },
+    }) as Promise<MakeTxData<T, { platformAllowConfig: PublicKey }>>;
+  }
+
+  public async createPlatformCurveRule<T extends TxVersion>({
+    programId = LAUNCHPAD_PROGRAM,
+    curveRuleAuthority,
+    platformId,
+    configId,
+    txVersion,
+    computeBudgetConfig,
+    txTipConfig,
+    feePayer,
+  }: CreatePlatformCurveRule<T>): Promise<MakeTxData<T, { platformCurveRuleId: PublicKey }>> {
+    const txBuilder = this.createTxBuilder(feePayer);
+
+    const { publicKey: platformCurveRuleId } = getPdaPlatformCurveRule(programId, platformId, configId);
+    txBuilder.addInstruction({
+      instructions: [
+        createPlatformCurveRuleIns(
+          programId,
+          curveRuleAuthority ?? this.scope.ownerPubKey,
+          platformId,
+          configId,
+          platformCurveRuleId,
+        ),
+      ],
+    });
+
+    txBuilder.addCustomComputeBudget(computeBudgetConfig);
+    txBuilder.addTipInstruction(txTipConfig);
+
+    return txBuilder.versionBuild({
+      txVersion,
+      extInfo: {
+        platformCurveRuleId,
+      },
+    }) as Promise<MakeTxData<T, { platformCurveRuleId: PublicKey }>>;
+  }
+
+  public async updatePlatformCurveRule<T extends TxVersion>({
+    programId = LAUNCHPAD_PROGRAM,
+    curveRuleAuthority,
+    platformCurveRuleId,
+    groupId,
+    constraints,
+
+    txVersion,
+    computeBudgetConfig,
+    txTipConfig,
+    feePayer,
+  }: UpdatePlatformCurveRule<T>): Promise<MakeTxData<T>> {
+    const txBuilder = this.createTxBuilder(feePayer);
+    const res = await this.scope.connection.getAccountInfo(platformCurveRuleId);
+    if (!res) throw new Error(`platformCurveRule ${platformCurveRuleId} not found`);
+    const ruleData = PlatformCurveRule.decode(res.data);
+
+    txBuilder.addInstruction({
+      instructions: [
+        updatePlatformCurveRuleIns(
+          programId,
+          curveRuleAuthority ?? this.scope.ownerPubKey,
+          ruleData.platformId,
+          ruleData.configId,
+          platformCurveRuleId,
+          groupId,
+          constraints,
+        ),
+      ],
+    });
+
+    txBuilder.addCustomComputeBudget(computeBudgetConfig);
+    txBuilder.addTipInstruction(txTipConfig);
+
+    return txBuilder.versionBuild({
+      txVersion,
+    }) as Promise<MakeTxData<T>>;
+  }
+
+  public async removePlatformCurveRule<T extends TxVersion>({
+    programId = LAUNCHPAD_PROGRAM,
+    curveRuleAuthority,
+    platformCurveRuleId,
+    groupId,
+
+    txVersion,
+    computeBudgetConfig,
+    txTipConfig,
+    feePayer,
+  }: Omit<UpdatePlatformCurveRule<T>, "constraints">): Promise<MakeTxData<T>> {
+    const txBuilder = this.createTxBuilder(feePayer);
+    const res = await this.scope.connection.getAccountInfo(platformCurveRuleId);
+    if (!res) throw new Error(`platformCurveRule ${platformCurveRuleId} not found`);
+    const ruleData = PlatformCurveRule.decode(res.data);
+
+    txBuilder.addInstruction({
+      instructions: [
+        removePlatformCurveRuleIns(
+          programId,
+          curveRuleAuthority ?? this.scope.ownerPubKey,
+          ruleData.platformId,
+          ruleData.configId,
+          platformCurveRuleId,
+          groupId,
+        ),
+      ],
+    });
+
+    txBuilder.addCustomComputeBudget(computeBudgetConfig);
+    txBuilder.addTipInstruction(txTipConfig);
+
+    return txBuilder.versionBuild({
+      txVersion,
+    }) as Promise<MakeTxData<T>>;
+  }
+
+  public async closePlatformCurveRule<T extends TxVersion>({
+    programId = LAUNCHPAD_PROGRAM,
+    curveRuleAuthority,
+    platformCurveRuleId,
+
+    txVersion,
+    computeBudgetConfig,
+    txTipConfig,
+    feePayer,
+  }: Omit<UpdatePlatformCurveRule<T>, "constraints" | "groupId">): Promise<MakeTxData<T>> {
+    const txBuilder = this.createTxBuilder(feePayer);
+    const res = await this.scope.connection.getAccountInfo(platformCurveRuleId);
+    if (!res) throw new Error(`platformCurveRule ${platformCurveRuleId} not found`);
+    const ruleData = PlatformCurveRule.decode(res.data);
+
+    txBuilder.addInstruction({
+      instructions: [
+        closePlatformCurveRuleIns(
+          programId,
+          curveRuleAuthority ?? this.scope.ownerPubKey,
+          ruleData.platformId,
+          ruleData.configId,
+          platformCurveRuleId,
+        ),
+      ],
+    });
+
+    txBuilder.addCustomComputeBudget(computeBudgetConfig);
+    txBuilder.addTipInstruction(txTipConfig);
+
+    return txBuilder.versionBuild({
+      txVersion,
+    }) as Promise<MakeTxData<T>>;
   }
 
   public async getRpcPoolInfo({

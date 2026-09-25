@@ -12,7 +12,7 @@ import {
   InstructionType,
 } from "@/common";
 import { createLogger } from "@/common/logger";
-import { getCpmmPdaPoolId, getCpLockPda } from "./pda";
+import { getCpmmPdaPoolId, getCpLockPda, getCreatorFeeSharePda } from "./pda";
 
 import { struct, u8, u64, bool } from "@/marshmallow";
 import { ReturnTypeMakeInstructions } from "@/raydium/type";
@@ -35,6 +35,7 @@ const anchorDataBuf = {
   closePermissionPda: Buffer.from([156, 84, 32, 118, 69, 135, 70, 123]),
   initializeWithPermission: Buffer.from([63, 55, 254, 65, 49, 178, 89, 121]),
   collectCreatorFee: Buffer.from([20, 22, 86, 123, 198, 28, 219, 132]),
+  collectCreatorFeePermissionless: Buffer.from([202, 202, 34, 83, 226, 122, 145, 229]),
 };
 
 export function makeCreateCpmmPoolInInstruction(
@@ -88,7 +89,7 @@ export function makeCreateCpmmPoolInInstruction(
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: RENT_PROGRAM_ID, isSigner: false, isWritable: false },
-    ...(supperMintEx ?? []).map(i => ({ pubkey: i, isSigner: false, isWritable: false })),
+    ...(supperMintEx ?? []).map((i) => ({ pubkey: i, isSigner: false, isWritable: false })),
   ];
 
   const data = Buffer.alloc(dataLayout.span);
@@ -563,6 +564,8 @@ export function makeCollectCreatorFeeInstruction(
   mintProgramA: PublicKey,
   mintProgramB: PublicKey,
 ): TransactionInstruction {
+  const creatorFeeShare = getCreatorFeeSharePda(programId, creator, configId).publicKey;
+
   const keys: Array<AccountMeta> = [
     { pubkey: creator, isSigner: true, isWritable: false },
     { pubkey: authority, isSigner: false, isWritable: false },
@@ -578,12 +581,57 @@ export function makeCollectCreatorFeeInstruction(
     { pubkey: mintProgramB, isSigner: false, isWritable: false },
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: creatorFeeShare, isSigner: false, isWritable: false },
   ];
 
   return new TransactionInstruction({
     keys,
     programId,
     data: anchorDataBuf.collectCreatorFee,
+  });
+}
+
+export function collectCreatorFeePermissionlessInInstruction(
+  programId: PublicKey,
+  payer: PublicKey,
+  creator: PublicKey,
+  authority: PublicKey,
+  poolId: PublicKey,
+  configId: PublicKey,
+  vaultA: PublicKey,
+  vaultB: PublicKey,
+  mintA: PublicKey,
+  mintB: PublicKey,
+  creatorVaultA: PublicKey,
+  creatorVaultB: PublicKey,
+  mintProgramA: PublicKey,
+  mintProgramB: PublicKey,
+): TransactionInstruction {
+  const creatorFeeShare = getCreatorFeeSharePda(programId, creator, configId).publicKey;
+
+  const keys: Array<AccountMeta> = [
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: creator, isSigner: false, isWritable: false },
+    { pubkey: authority, isSigner: false, isWritable: false },
+    { pubkey: poolId, isSigner: false, isWritable: true },
+    { pubkey: vaultA, isSigner: false, isWritable: true },
+    { pubkey: vaultB, isSigner: false, isWritable: true },
+    { pubkey: mintA, isSigner: false, isWritable: false },
+    { pubkey: mintB, isSigner: false, isWritable: false },
+    { pubkey: creatorVaultA, isSigner: false, isWritable: true },
+    { pubkey: creatorVaultB, isSigner: false, isWritable: true },
+    { pubkey: mintProgramA, isSigner: false, isWritable: false },
+    { pubkey: mintProgramB, isSigner: false, isWritable: false },
+    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: configId, isSigner: false, isWritable: false },
+    { pubkey: creatorFeeShare, isSigner: false, isWritable: false },
+  ];
+
+  return new TransactionInstruction({
+    keys,
+    programId,
+    data: anchorDataBuf.collectCreatorFeePermissionless,
   });
 }
 
@@ -642,7 +690,7 @@ export function initializeWithPermission(
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
 
-    ...(supperMintEx ?? []).map(i => ({ pubkey: i, isSigner: false, isWritable: false })),
+    ...(supperMintEx ?? []).map((i) => ({ pubkey: i, isSigner: false, isWritable: false })),
   ];
 
   const data = Buffer.alloc(dataLayout.span);

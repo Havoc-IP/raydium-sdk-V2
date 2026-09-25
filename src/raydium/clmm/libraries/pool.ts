@@ -194,7 +194,7 @@ import { RewardInfoLayout } from "../layout";
 import { ComputeClmmPoolInfo } from "../type";
 import { x64ToDecimal } from "./bigNum";
 
-import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Connection, EpochInfo } from "@solana/web3.js";
 
 import {
@@ -223,6 +223,7 @@ import { MAX_SQRT_PRICE_X64, MIN_SQRT_PRICE_X64 } from "./constants";
 import { LiquidityMathUtil } from "./liquidityMath";
 import { getPdaExBitmapAccount, getPdaTickArrayAddress } from "./pda";
 import { swapInternal } from "./swapSimulator";
+import { ReturnTypeFetchMultipleMintInfos, toApiV3Token } from "@/raydium";
 
 export class PoolUtils {
   public static getOutputAmountAndRemainAccounts(
@@ -963,8 +964,6 @@ export class PoolUtils {
     const sqrtPriceX64A = TickUtil.getSqrtPriceAtTick(tickLower);
     const sqrtPriceX64B = TickUtil.getSqrtPriceAtTick(tickUpper);
 
-    const coefficientRe = add ? 1 + slippage : 1 - slippage;
-
     const amounts = LiquidityMathUtil.getAmountsForLiquidity(
       TickUtil.priceToSqrtPriceX64(new Decimal(poolInfo.price), poolInfo.mintA.decimals, poolInfo.mintB.decimals),
       sqrtPriceX64A,
@@ -976,15 +975,17 @@ export class PoolUtils {
       getTransferAmountFeeV2(amounts.amountA, poolInfo.mintA.extensions?.feeConfig, epochInfo, true),
       getTransferAmountFeeV2(amounts.amountB, poolInfo.mintB.extensions?.feeConfig, epochInfo, true),
     ];
+
+    const slippageBps = slippage * 10000;
     const [amountSlippageA, amountSlippageB] = [
       getTransferAmountFeeV2(
-        amounts.amountA.muln(coefficientRe),
+        amounts.amountA.muln(10000 - slippageBps).divn(10000),
         poolInfo.mintA.extensions?.feeConfig,
         epochInfo,
         true,
       ),
       getTransferAmountFeeV2(
-        amounts.amountB.muln(coefficientRe),
+        amounts.amountB.muln(10000 - slippageBps).divn(10000),
         poolInfo.mintB.extensions?.feeConfig,
         epochInfo,
         true,
@@ -1123,13 +1124,28 @@ const mockRewardData = {
   rewardApr: [],
 };
 
-export function clmmComputeInfoToApiInfo(pool: ComputeClmmPoolInfo): ApiV3PoolInfoConcentratedItem {
+export function clmmComputeInfoToApiInfo(
+  pool: ComputeClmmPoolInfo,
+  mintInfos?: ReturnTypeFetchMultipleMintInfos,
+): ApiV3PoolInfoConcentratedItem {
+  const mintData = mintInfos ?? {};
   return {
     ...pool,
     type: "Concentrated",
     programId: pool.programId.toString(),
     id: pool.id.toString(),
-    rewardDefaultInfos: [],
+    rewardDefaultInfos: pool.rewardInfos
+      .filter((r) => !r.mint.equals(PublicKey.default))
+      .map((r) => ({
+        mint: toApiV3Token({
+          address: r.mint.toBase58(),
+          programId: TOKEN_PROGRAM_ID.toBase58(),
+          decimals: mintData[r.mint.toBase58()].decimals ?? 6,
+        }),
+        perSecond: Number(r.emissionsPerSecondX64.divn(10 ** (mintData[r.mint.toBase58()].decimals ?? 6)).toString()),
+        startTime: r.openTime.toNumber(),
+        endTime: r.endTime.toNumber(),
+      })),
     rewardDefaultPoolInfos: "Clmm",
     price: pool.currentPrice.toNumber(),
     mintAmountA: 0,
